@@ -1,0 +1,87 @@
+# OFF-BOX HEARTBEAT — the watchdog that does NOT run on the machine it watches.
+#
+# A machine posts a beat every 15 minutes. This workflow runs on GitHub's machines and asks one
+# question daily: is the newest beat younger than 26 hours? If not — or if the table is EMPTY — the
+# job exits 1.
+#
+# THE ALERT CHANNEL IS THE FAILURE ITSELF: GitHub emails the repository owner when a scheduled
+# workflow run fails. No bot, no webhook, no secret to rot — a red run in the Actions tab plus the
+# email IS the alarm "the machine has gone quiet". That is the property a monitor running ON the
+# watched box can never have: a dead box silences its own alarm.
+#
+# ⚠️ WHY THIS LIVES IN A PUBLIC REPO, ON PURPOSE (moved here 2026-08-28).
+# It used to live beside the code it watches, in a PRIVATE repo. On 2026-08-27 GitHub stopped
+# starting Actions jobs on that account for billing, and this workflow died with them — silently,
+# because a job that never STARTS still shows up as a failed run. So the alarm began emitting a
+# daily false alarm indistinguishable from a real one, which is worse than no alarm: it trains the
+# reader to ignore the exact signal that means the machine is down.
+# Actions minutes are unlimited on PUBLIC repositories. Here it cannot die that way again.
+# (How to tell the two apart if it ever happens again: a job that was never started has NO LOG.)
+#
+# NO SECRETS, BY CONSTRUCTION. The key below is the PUBLISHABLE anon key — the same one the web app
+# already ships to every browser. RLS is the boundary: this table allows anonymous SELECT and
+# nothing else; the write path is service-role only, so nobody can use this key to fake a machine
+# alive. NEVER put a service key in this file — it is public.
+#
+# WHY 26 HOURS when the beat fires every 15 minutes: the machine sleeps at night, declines to run on
+# battery, and reboots happen — a tight threshold would page about ordinary sleep. 26h means "a full
+# day passed and the machine never checked in once", with an hour or two of slack for DST and clock
+# drift.
+#
+# CAVEATS (GitHub's rules, not ours):
+#   - scheduled workflows run only from the DEFAULT branch;
+#   - GitHub SUSPENDS schedules in repos with ~60 days of no activity — if this repo goes quiet for
+#     two months the cron stops, so push something trivial (or hit "Run workflow") before then;
+#   - the cron minute is deliberately off the :00/:30 herd, which is the most oversubscribed slot.
+name: Off-box heartbeat
+
+on:
+  schedule:
+    # daily at 13:41 UTC (~9:41am ET) — an off-minute, see the caveat above
+    - cron: '41 13 * * *'
+  # manual runs for testing the check itself — never required for the alarm to work
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    name: Newest beat must be younger than 26 hours
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read the newest heartbeat (publishable anon key — public by design)
+        run: |
+          set -euo pipefail
+          URL='https://femuksopmrperzwcxbhy.supabase.co'
+          # PUBLISHABLE anon key — the same one the web app ships to browsers. Read-only by RLS.
+          # NOT a secret. NEVER the service key.
+          ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlbXVrc29wbXJwZXJ6d2N4Ymh5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxOTI0MjYsImV4cCI6MjEwMTc2ODQyNn0.fss5G6M9Bs0P59KK_EcdoaWZ50wBfhksQBMl7MGzzbI'
+
+          resp="$(curl -sS --fail --max-time 30 \
+            "$URL/rest/v1/heartbeats?select=machine,beat_at&order=beat_at.desc&limit=1" \
+            -H "apikey: $ANON" -H "Authorization: Bearer $ANON")"
+          echo "REST answer: $resp"
+
+          beat="$(echo "$resp" | jq -r '.[0].beat_at // empty')"
+          machine="$(echo "$resp" | jq -r '.[0].machine // "unknown"')"
+
+          # EMPTY TABLE IS A FAILURE, NOT A PASS. "No machine has ever checked in" and "the machine
+          # died" must both ring the bell — a monitor that treats absence-of-data as health is the
+          # exact silent-failure shape this workflow exists to kill.
+          if [ -z "$beat" ]; then
+            echo "::error::heartbeats table is EMPTY — no machine has ever checked in. Treating as DEAD."
+            exit 1
+          fi
+
+          beat_s="$(date -d "$beat" +%s)"
+          now_s="$(date +%s)"
+          age_s=$(( now_s - beat_s ))
+          echo "newest beat: machine='$machine' at $beat (~$(( age_s / 3600 ))h $(( (age_s % 3600) / 60 ))m ago)"
+
+          # the 26-hour line (see the header for why 26 and not tighter)
+          if [ "$age_s" -gt $(( 26 * 3600 )) ]; then
+            echo "::error::newest heartbeat is older than 26 hours — the machine (or its 15-minute collector task) has gone quiet. Check the machine is on, awake, and the 'BOC Collect Connections Daily' scheduled task is running."
+            exit 1
+          fi
+          echo "machine is alive ✅"
