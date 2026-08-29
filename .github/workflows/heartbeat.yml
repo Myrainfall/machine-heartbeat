@@ -37,8 +37,25 @@ name: Off-box heartbeat
 
 on:
   schedule:
-    # daily at 13:41 UTC (~9:41am ET) — an off-minute, see the caveat above
-    - cron: '41 13 * * *'
+    # EVERY SIX HOURS, at an off-minute. It ran ONCE A DAY until 2026-08-29, and one daily slot is a
+    # single point of failure for the only alarm that is not on the watched machine.
+    #
+    # GitHub's own docs: scheduled workflows "may be delayed during periods of high loads", and
+    # under enough load "some jobs may be dropped" entirely. A dropped slot is not reported
+    # anywhere - there is no run, no log, no email - so a daily cron that silently misses its turn
+    # leaves a whole day with NO off-box check and nothing to say so. That is the exact shape this
+    # workflow exists to defend against, aimed at the workflow itself.
+    # Observed 2026-08-29: the 13:41 slot came and went with no run at all, on a repo whose config
+    # is provably correct (public, default branch, workflow present, Actions API state 'active').
+    #
+    # Four slots a day means a dropped one costs six hours instead of twenty-four, and it also cuts
+    # worst-case detection: the check asks whether the newest beat is younger than 26 hours, so the
+    # slowest possible alarm goes from 26+24h to 26+6h. Public-repo Actions minutes are unlimited,
+    # so the extra runs cost nothing.
+    # TRADE-OFF, stated: during a REAL outage this emails four times a day instead of once. That is
+    # the right direction for an alarm - the failing run IS the alert channel - and it stops the
+    # moment the machine beats again.
+    - cron: '41 1,7,13,19 * * *'
   # manual runs for testing the check itself — never required for the alarm to work
   workflow_dispatch:
 
