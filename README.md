@@ -29,6 +29,10 @@ GitHub suspends scheduled workflows in repositories with roughly 60 days of no a
 repo goes quiet that long the cron stops firing. Pushing any commit — or pressing **Run workflow**
 on the Actions tab — resets that clock.
 
+Since 2026-10-14 the watched machine's own daily check sends a reminder once this repository has
+gone 50 days without a push, so the 60-day limit is never reached by accident.
+Last maintenance commit: 2026-10-14.
+
 ## Telling a real alarm from an infrastructure one
 
 A failed run with a **log** is a real alarm: read it, it says how old the newest beat is.
